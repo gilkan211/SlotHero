@@ -35,4 +35,6 @@ public class Business
     /// UTC timestamp of when the business registered.
     /// </summary>
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+
+    public ICollection<BusinessHour> BusinessHours { get; set; } = new List<BusinessHour>();
 }

@@ -109,4 +109,109 @@ public class BusinessController : ControllerBase
             return Unauthorized("Google session expired or invalid. Please re-authenticate.");
         }
     }
+
+    /// <summary>
+    /// Replaces all business hours for a given business with the provided set.
+    /// Validates day range, time sequence, minimum duration, midnight boundary, and overlap constraints.
+    /// </summary>
+    [HttpPut("{id}/hours")]
+    public async Task<IActionResult> UpdateBusinessHours(Guid id, [FromBody] List<BusinessHourDto> hoursDto, CancellationToken ct)
+    {
+        if (hoursDto is null)
+            return BadRequest("Hours payload cannot be null.");
+
+        var maxTime = new TimeSpan(23, 59, 59);
+
+        foreach (var h in hoursDto)
+        {
+            if ((int)h.DayOfWeek < 0 || (int)h.DayOfWeek > 6)
+            {
+                _logger.LogWarning("Invalid DayOfWeek {DayOfWeek} submitted for Business: {BusinessId}", h.DayOfWeek, id);
+                return BadRequest("Invalid DayOfWeek: must be between 0 (Sunday) and 6 (Saturday).");
+            }
+
+            if (h.StartTime >= h.EndTime)
+            {
+                _logger.LogWarning("Invalid hours submitted for Business: {BusinessId}", id);
+                return BadRequest("Invalid business hours: Start time must be earlier than end time.");
+            }
+
+            if (h.EndTime - h.StartTime < TimeSpan.FromMinutes(30))
+            {
+                _logger.LogWarning("Duration too short for Business: {BusinessId}", id);
+                return BadRequest("Each business hour window must be at least 30 minutes long.");
+            }
+
+            if (h.EndTime > maxTime)
+            {
+                _logger.LogWarning("EndTime exceeds midnight for Business: {BusinessId}", id);
+                return BadRequest("EndTime cannot exceed 23:59:59. Overnight shifts are not supported.");
+            }
+        }
+
+        // Overlap detection: within each day, no window may start before the previous one ends
+        foreach (var dayGroup in hoursDto.GroupBy(h => h.DayOfWeek))
+        {
+            var sorted = dayGroup.OrderBy(h => h.StartTime).ToList();
+            for (int i = 1; i < sorted.Count; i++)
+            {
+                if (sorted[i].StartTime < sorted[i - 1].EndTime)
+                {
+                    _logger.LogWarning("Overlapping hours on {DayOfWeek} for Business: {BusinessId}", dayGroup.Key, id);
+                    return BadRequest("Overlapping business hours detected on " + dayGroup.Key + ".");
+                }
+            }
+        }
+
+        // AnyAsync: only checks existence without loading the entity into memory
+        var exists = await _context.Businesses.AnyAsync(b => b.Id == id, ct);
+        if (!exists)
+            return NotFound();
+
+        try
+        {
+            // Remove-then-add ensures a clean replace without partial update conflicts
+            var existing = _context.BusinessHours.Where(bh => bh.BusinessId == id);
+            _context.BusinessHours.RemoveRange(existing);
+
+            var newHours = hoursDto.Select(h => new BusinessHour
+            {
+                BusinessId = id,
+                DayOfWeek = h.DayOfWeek,
+                StartTime = h.StartTime,
+                EndTime = h.EndTime
+            });
+
+            _context.BusinessHours.AddRange(newHours);
+            await _context.SaveChangesAsync(ct);
+
+            return NoContent();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to save business hours for BusinessId: {BusinessId}", id);
+            return StatusCode(500, "An error occurred while saving business hours.");
+        }
+    }
+
+    /// <summary>
+    /// Retrieves all configured business hours for a given business, sorted by day and start time.
+    /// </summary>
+    [HttpGet("{id}/hours")]
+    public async Task<IActionResult> GetBusinessHours(Guid id, CancellationToken ct)
+    {
+        var exists = await _context.Businesses.AnyAsync(b => b.Id == id, ct);
+        if (!exists)
+            return NotFound();
+
+        var results = await _context.BusinessHours
+            .AsNoTracking()
+            .Where(bh => bh.BusinessId == id)
+            .OrderBy(bh => bh.DayOfWeek)
+            .ThenBy(bh => bh.StartTime)
+            .Select(bh => new BusinessHourDto(bh.DayOfWeek, bh.StartTime, bh.EndTime))
+            .ToListAsync(ct);
+
+        return Ok(results);
+    }
 }

@@ -23,6 +23,11 @@ public class AppDbContext : DbContext
     /// </summary>
     public DbSet<SlotAuction> SlotAuctions { get; set; } = null!;
 
+    /// <summary>
+    /// Operating windows that define when a business accepts appointments.
+    /// </summary>
+    public DbSet<BusinessHour> BusinessHours { get; set; } = null!;
+
     public AppDbContext() { }
 
     public AppDbContext(DbContextOptions<AppDbContext> options) : base(options)
@@ -51,5 +56,11 @@ public class AppDbContext : DbContext
         modelBuilder.Entity<WaitlistEntry>()
             .HasIndex(w => w.ClientPhone)
             .IsUnique();
+
+        modelBuilder.Entity<BusinessHour>()
+            .HasOne(bh => bh.Business)
+            .WithMany(b => b.BusinessHours)
+            .HasForeignKey(bh => bh.BusinessId)
+            .IsRequired();
     }
 }
