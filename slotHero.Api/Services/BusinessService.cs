@@ -1,3 +1,4 @@
+using Google.Apis.Calendar.v3.Data;
 using Microsoft.EntityFrameworkCore;
 using SlotHero.Api.DTOs;
 using SlotHero.Core;
@@ -6,11 +7,22 @@ using SlotHero.Core.Models;
 namespace SlotHero.Api.Services;
 
 /// <summary>
-/// Encapsulates business-hours retrieval and persistence logic,
+/// Encapsulates business CRUD and business-hours logic,
 /// keeping the controller thin and the domain rules testable in isolation.
 /// </summary>
 public interface IBusinessService
 {
+    /// <summary>
+    /// Returns a business by its unique identifier, or null if not found.
+    /// </summary>
+    Task<BusinessResponseDto?> GetBusinessByIdAsync(Guid id, CancellationToken ct);
+
+    /// <summary>
+    /// Registers a new business. Returns the created DTO on success,
+    /// or an error string ("CONFLICT" for duplicate GoogleId, other messages for general failures).
+    /// </summary>
+    Task<(BusinessResponseDto? Result, string? Error)> CreateBusinessAsync(CreateBusinessRequest request, CancellationToken ct);
+
     /// <summary>
     /// Returns all configured business hours for a given business, sorted by day and start time.
     /// Returns null if the business does not exist.
@@ -23,17 +35,73 @@ public interface IBusinessService
     /// Returns the string "NOT_FOUND" if the business does not exist.
     /// </summary>
     Task<string?> UpdateBusinessHoursAsync(Guid businessId, List<BusinessHourDto> hoursDto, CancellationToken ct);
+
+    /// <summary>
+    /// Returns the encrypted refresh token for a business.
+    /// Returns (null, false) if the business does not exist, or (token, true) if found.
+    /// </summary>
+    Task<(string? Token, bool Found)> GetBusinessRefreshTokenAsync(Guid businessId, CancellationToken ct);
+
+    /// <summary>
+    /// Fetches upcoming Google Calendar events for a registered business.
+    /// Returns (events, null) on success, or (null, errorCode) on failure.
+    /// Error codes: "NOT_FOUND", "NO_TOKEN", "AUTH_FAILED".
+    /// </summary>
+    Task<(IEnumerable<Event>? Events, string? Error)> GetUpcomingEventsAsync(Guid businessId, CancellationToken ct);
 }
 
 public class BusinessService : IBusinessService
 {
     private readonly AppDbContext _context;
     private readonly ILogger<BusinessService> _logger;
+    private readonly IGoogleCalendarService _googleCalendarService;
 
-    public BusinessService(AppDbContext context, ILogger<BusinessService> logger)
+    public BusinessService(AppDbContext context, ILogger<BusinessService> logger, IGoogleCalendarService googleCalendarService)
     {
         _context = context;
         _logger = logger;
+        _googleCalendarService = googleCalendarService;
+    }
+
+    public async Task<BusinessResponseDto?> GetBusinessByIdAsync(Guid id, CancellationToken ct)
+    {
+        var business = await _context.Businesses.FirstOrDefaultAsync(b => b.Id == id, ct);
+        if (business is null)
+            return null;
+
+        return new BusinessResponseDto(business.Id, business.GoogleId, business.Email, business.BusinessName, business.CreatedAt);
+    }
+
+    public async Task<(BusinessResponseDto? Result, string? Error)> CreateBusinessAsync(CreateBusinessRequest request, CancellationToken ct)
+    {
+        try
+        {
+            // Map DTO to entity to enforce server-controlled fields
+            var business = new Business
+            {
+                GoogleId = request.GoogleId,
+                Email = request.Email,
+                BusinessName = request.BusinessName,
+                EncryptedRefreshToken = request.EncryptedRefreshToken ?? string.Empty,
+                CreatedAt = DateTime.UtcNow
+            };
+
+            _context.Businesses.Add(business);
+            await _context.SaveChangesAsync(ct);
+
+            var dto = new BusinessResponseDto(business.Id, business.GoogleId, business.Email, business.BusinessName, business.CreatedAt);
+            return (dto, null);
+        }
+        catch (DbUpdateException ex)
+        {
+            _logger.LogWarning(ex, "Duplicate registration attempt for GoogleId: {GoogleId}", request.GoogleId);
+            return (null, "CONFLICT");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to register business for Email: {Email}", request.Email);
+            return (null, "An error occurred while registering the business.");
+        }
     }
 
     public async Task<List<BusinessHourDto>?> GetBusinessHoursAsync(Guid businessId, CancellationToken ct)
@@ -127,6 +195,41 @@ public class BusinessService : IBusinessService
         {
             _logger.LogError(ex, "Failed to save business hours for BusinessId: {BusinessId}", businessId);
             throw;
+        }
+    }
+
+    public async Task<(string? Token, bool Found)> GetBusinessRefreshTokenAsync(Guid businessId, CancellationToken ct)
+    {
+        // AsNoTracking: read-only lookup avoids change-tracker overhead
+        var business = await _context.Businesses
+            .AsNoTracking()
+            .FirstOrDefaultAsync(b => b.Id == businessId, ct);
+
+        if (business is null)
+            return (null, false);
+
+        return (business.EncryptedRefreshToken, true);
+    }
+
+    public async Task<(IEnumerable<Event>? Events, string? Error)> GetUpcomingEventsAsync(Guid businessId, CancellationToken ct)
+    {
+        var (token, found) = await GetBusinessRefreshTokenAsync(businessId, ct);
+
+        if (!found)
+            return (null, "NOT_FOUND");
+
+        if (string.IsNullOrEmpty(token))
+            return (null, "NO_TOKEN");
+
+        try
+        {
+            var events = await _googleCalendarService.GetUpcomingEventsAsync(token, businessId.ToString(), ct);
+            return (events, null);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Google Calendar call failed for BusinessId: {BusinessId}", businessId);
+            return (null, "AUTH_FAILED");
         }
     }
 }

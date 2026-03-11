@@ -1,4 +1,5 @@
 using System.ComponentModel.DataAnnotations;
+using System.Text.Json.Serialization;
 
 namespace SlotHero.Api.DTOs;
 
@@ -9,4 +10,4 @@ public record CreateBusinessRequest(
     string GoogleId,
     [Required][EmailAddress] string Email,
     [Required][StringLength(100)] string BusinessName,
-    string? GoogleRefreshToken = null);
+    [property: JsonPropertyName("encryptedRefreshToken")] string? EncryptedRefreshToken = null);

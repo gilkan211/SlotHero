@@ -1,10 +1,6 @@
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.EntityFrameworkCore;
-using Google.Apis.Calendar.v3.Data;
 using SlotHero.Api.DTOs;
 using SlotHero.Api.Services;
-using SlotHero.Core;
-using SlotHero.Core.Models;
 
 namespace SlotHero.Api.Controllers;
 
@@ -15,16 +11,12 @@ namespace SlotHero.Api.Controllers;
 [Route("api/[controller]")]
 public class BusinessController : ControllerBase
 {
-    private readonly AppDbContext _context;
     private readonly ILogger<BusinessController> _logger;
-    private readonly IGoogleCalendarService _googleCalendarService;
     private readonly IBusinessService _businessService;
 
-    public BusinessController(AppDbContext context, ILogger<BusinessController> logger, IGoogleCalendarService googleCalendarService, IBusinessService businessService)
+    public BusinessController(ILogger<BusinessController> logger, IBusinessService businessService)
     {
-        _context = context;
         _logger = logger;
-        _googleCalendarService = googleCalendarService;
         _businessService = businessService;
     }
 
@@ -34,12 +26,10 @@ public class BusinessController : ControllerBase
     [HttpGet("{id}")]
     public async Task<IActionResult> GetBusinessById(Guid id, CancellationToken ct)
     {
-        var business = await _context.Businesses.FirstOrDefaultAsync(b => b.Id == id, ct);
-        if (business == null)
+        var response = await _businessService.GetBusinessByIdAsync(id, ct);
+        if (response is null)
             return NotFound();
 
-        // Return a response DTO to avoid leaking sensitive fields like EncryptedRefreshToken
-        var response = new BusinessResponseDto(business.Id, business.GoogleId, business.Email, business.BusinessName, business.CreatedAt);
         return Ok(response);
     }
 
@@ -49,36 +39,15 @@ public class BusinessController : ControllerBase
     [HttpPost]
     public async Task<IActionResult> Create([FromBody] CreateBusinessRequest request, CancellationToken ct)
     {
-        try
-        {
-            // Map DTO to entity to bypass init-only constraints and enforce server-controlled fields
-            var business = new Business
-            {
-                GoogleId = request.GoogleId,
-                Email = request.Email,
-                BusinessName = request.BusinessName,
-                EncryptedRefreshToken = request.GoogleRefreshToken ?? string.Empty,
-                CreatedAt = DateTime.UtcNow
-            };
+        var (result, error) = await _businessService.CreateBusinessAsync(request, ct);
 
-            _context.Businesses.Add(business);
-            await _context.SaveChangesAsync(ct);
+        if (result is not null)
+            return CreatedAtAction(nameof(GetBusinessById), new { id = result.Id }, result);
 
-            var response = new BusinessResponseDto(business.Id, business.GoogleId, business.Email, business.BusinessName, business.CreatedAt);
-            return CreatedAtAction(nameof(GetBusinessById), new { id = business.Id }, response);
-        }
-        catch (DbUpdateException ex)
-        {
-            // DbUpdateException surfaces unique constraint violations (e.g., duplicate GoogleId)
-            _logger.LogWarning(ex, "Duplicate registration attempt for GoogleId: {GoogleId}", request.GoogleId);
+        if (error == "CONFLICT")
             return Conflict("A business with this Google ID already exists.");
-        }
-        catch (Exception ex)
-        {
-            // Catch broad exception to prevent leaking internal details to the client
-            _logger.LogError(ex, "Failed to register business for Email: {Email}", request.Email);
-            return StatusCode(500, "An error occurred while registering the business.");
-        }
+
+        return StatusCode(500, "An error occurred while registering the business.");
     }
 
     /// <summary>
@@ -88,28 +57,18 @@ public class BusinessController : ControllerBase
     [HttpGet("{id}/events")]
     public async Task<IActionResult> GetEvents(Guid id, CancellationToken ct)
     {
-        // AsNoTracking: read-only lookup avoids change-tracker overhead
-        var business = await _context.Businesses
-            .AsNoTracking()
-            .FirstOrDefaultAsync(b => b.Id == id, ct);
+        var (events, error) = await _businessService.GetUpcomingEventsAsync(id, ct);
 
-        if (business is null)
-            return NotFound("Business not found in SlotHero database.");
+        if (error is null)
+            return Ok(events!.ToList());
 
-        if (string.IsNullOrEmpty(business.EncryptedRefreshToken))
-            return BadRequest("Google account not linked for this business.");
-
-        try
+        return error switch
         {
-            var events = await _googleCalendarService.GetUpcomingEventsAsync(business.EncryptedRefreshToken, id.ToString(), ct);
-
-            return Ok(events?.ToList() ?? new List<Event>());
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Google Calendar call failed for BusinessId: {BusinessId}", id);
-            return Unauthorized("Google session expired or invalid. Please re-authenticate.");
-        }
+            "NOT_FOUND" => NotFound("Business not found in SlotHero database."),
+            "NO_TOKEN" => BadRequest("Google account not linked for this business."),
+            "AUTH_FAILED" => Unauthorized("Google session expired or invalid. Please re-authenticate."),
+            _ => StatusCode(500, "An unexpected error occurred.")
+        };
     }
 
     /// <summary>
