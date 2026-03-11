@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="SlotHero.Api/SlotHero.Api.csproj" />
+  <Project Path="SlotHero.Core/SlotHero.Core.csproj" />
+</Solution>
