@@ -28,7 +28,7 @@ public class GoogleCalendarService : IGoogleCalendarService
     /// Fetches upcoming calendar events for a business using its stored refresh token,
     /// allowing SlotHero to determine which time slots are already booked.
     /// </summary>
-    public async Task<IEnumerable<Event>> GetUpcomingEventsAsync(string refreshToken, string businessId, CancellationToken ct = default)
+    public async Task<IEnumerable<Event>> GetUpcomingEventsAsync(string refreshToken, string businessId, CancellationToken ct = default, DateTimeOffset? timeMin = null, DateTimeOffset? timeMax = null)
     {
         try
         {
@@ -62,7 +62,9 @@ public class GoogleCalendarService : IGoogleCalendarService
             });
 
             var request = service.Events.List("primary");
-            request.TimeMinDateTimeOffset = DateTimeOffset.UtcNow;
+            request.TimeMinDateTimeOffset = timeMin ?? DateTimeOffset.UtcNow;
+            if (timeMax.HasValue)
+                request.TimeMaxDateTimeOffset = timeMax.Value;
             request.ShowDeleted = false;
             request.SingleEvents = true;
             request.OrderBy = EventsResource.ListRequest.OrderByEnum.StartTime;

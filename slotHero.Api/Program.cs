@@ -21,6 +21,7 @@ builder.Services.AddControllers();
 builder.Services.Configure<GoogleSettings>(builder.Configuration.GetSection("Google"));
 builder.Services.AddScoped<IGoogleCalendarService, GoogleCalendarService>();
 builder.Services.AddScoped<IBusinessService, BusinessService>();
+builder.Services.AddScoped<IAvailabilityService, AvailabilityService>();
 
 // SQLite path points to the Core project to keep the database co-located with the data model
 builder.Services.AddDbContext<AppDbContext>(options =>

@@ -12,5 +12,5 @@ public interface IGoogleCalendarService
     /// Fetches upcoming calendar events for a business using its stored refresh token,
     /// allowing SlotHero to determine which time slots are already booked.
     /// </summary>
-    Task<IEnumerable<Event>> GetUpcomingEventsAsync(string refreshToken, string businessId, CancellationToken ct = default);
+    Task<IEnumerable<Event>> GetUpcomingEventsAsync(string refreshToken, string businessId, CancellationToken ct = default, DateTimeOffset? timeMin = null, DateTimeOffset? timeMax = null);
 }

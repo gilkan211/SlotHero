@@ -47,7 +47,7 @@ public interface IBusinessService
     /// Returns (events, null) on success, or (null, errorCode) on failure.
     /// Error codes: "NOT_FOUND", "NO_TOKEN", "AUTH_FAILED".
     /// </summary>
-    Task<(IEnumerable<Event>? Events, string? Error)> GetUpcomingEventsAsync(Guid businessId, CancellationToken ct);
+    Task<(IEnumerable<Event>? Events, string? Error)> GetUpcomingEventsAsync(Guid businessId, CancellationToken ct, DateTimeOffset? timeMin = null, DateTimeOffset? timeMax = null);
 }
 
 public class BusinessService : IBusinessService
@@ -65,11 +65,19 @@ public class BusinessService : IBusinessService
 
     public async Task<BusinessResponseDto?> GetBusinessByIdAsync(Guid id, CancellationToken ct)
     {
-        var business = await _context.Businesses.FirstOrDefaultAsync(b => b.Id == id, ct);
-        if (business is null)
-            return null;
+        try
+        {
+            var business = await _context.Businesses.FirstOrDefaultAsync(b => b.Id == id, ct);
+            if (business is null)
+                return null;
 
-        return new BusinessResponseDto(business.Id, business.GoogleId, business.Email, business.BusinessName, business.CreatedAt);
+            return new BusinessResponseDto(business.Id, business.GoogleId, business.Email, business.BusinessName, business.CreatedAt);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to retrieve business for Id: {BusinessId}", id);
+            throw;
+        }
     }
 
     public async Task<(BusinessResponseDto? Result, string? Error)> CreateBusinessAsync(CreateBusinessRequest request, CancellationToken ct)
@@ -106,21 +114,29 @@ public class BusinessService : IBusinessService
 
     public async Task<List<BusinessHourDto>?> GetBusinessHoursAsync(Guid businessId, CancellationToken ct)
     {
-        var exists = await _context.Businesses.AnyAsync(b => b.Id == businessId, ct);
-        if (!exists)
-            return null;
+        try
+        {
+            var exists = await _context.Businesses.AnyAsync(b => b.Id == businessId, ct);
+            if (!exists)
+                return null;
 
-        // Materialize first to avoid SQLite's lack of TimeSpan support in ORDER BY
-        var hours = await _context.BusinessHours
-            .AsNoTracking()
-            .Where(bh => bh.BusinessId == businessId)
-            .Select(bh => new BusinessHourDto(bh.DayOfWeek, bh.StartTime, bh.EndTime))
-            .ToListAsync(ct);
+            // Materialize first to avoid SQLite's lack of TimeSpan support in ORDER BY
+            var hours = await _context.BusinessHours
+                .AsNoTracking()
+                .Where(bh => bh.BusinessId == businessId)
+                .Select(bh => new BusinessHourDto(bh.DayOfWeek, bh.StartTime, bh.EndTime))
+                .ToListAsync(ct);
 
-        return hours
-            .OrderBy(h => h.DayOfWeek)
-            .ThenBy(h => h.StartTime)
-            .ToList();
+            return hours
+                .OrderBy(h => h.DayOfWeek)
+                .ThenBy(h => h.StartTime)
+                .ToList();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to retrieve business hours for BusinessId: {BusinessId}", businessId);
+            throw;
+        }
     }
 
     public async Task<string?> UpdateBusinessHoursAsync(Guid businessId, List<BusinessHourDto> hoursDto, CancellationToken ct)
@@ -211,7 +227,7 @@ public class BusinessService : IBusinessService
         return (business.EncryptedRefreshToken, true);
     }
 
-    public async Task<(IEnumerable<Event>? Events, string? Error)> GetUpcomingEventsAsync(Guid businessId, CancellationToken ct)
+    public async Task<(IEnumerable<Event>? Events, string? Error)> GetUpcomingEventsAsync(Guid businessId, CancellationToken ct, DateTimeOffset? timeMin = null, DateTimeOffset? timeMax = null)
     {
         var (token, found) = await GetBusinessRefreshTokenAsync(businessId, ct);
 
@@ -223,7 +239,7 @@ public class BusinessService : IBusinessService
 
         try
         {
-            var events = await _googleCalendarService.GetUpcomingEventsAsync(token, businessId.ToString(), ct);
+            var events = await _googleCalendarService.GetUpcomingEventsAsync(token, businessId.ToString(), ct, timeMin, timeMax);
             return (events, null);
         }
         catch (Exception ex)

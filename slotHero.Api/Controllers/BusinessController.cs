@@ -13,11 +13,13 @@ public class BusinessController : ControllerBase
 {
     private readonly ILogger<BusinessController> _logger;
     private readonly IBusinessService _businessService;
+    private readonly IAvailabilityService _availabilityService;
 
-    public BusinessController(ILogger<BusinessController> logger, IBusinessService businessService)
+    public BusinessController(ILogger<BusinessController> logger, IBusinessService businessService, IAvailabilityService availabilityService)
     {
         _logger = logger;
         _businessService = businessService;
+        _availabilityService = availabilityService;
     }
 
     /// <summary>
@@ -103,5 +105,39 @@ public class BusinessController : ControllerBase
             return NotFound();
 
         return Ok(results);
+    }
+
+    /// <summary>
+    /// Returns available time slots for a business on the requested date,
+    /// factoring in business hours and existing Google Calendar events.
+    /// </summary>
+    [HttpGet("{id}/availability")]
+    public async Task<IActionResult> GetAvailability(Guid id, [FromQuery] DateTimeOffset date, [FromQuery] int durationMinutes = 30, [FromQuery] int bufferMinutes = 0, CancellationToken ct = default)
+    {
+        if (durationMinutes <= 0 || bufferMinutes < 0)
+            return BadRequest("Invalid duration or buffer parameters.");
+
+        try
+        {
+            var slots = await _availabilityService.GetAvailableSlotsAsync(id, date, TimeSpan.FromMinutes(durationMinutes), TimeSpan.FromMinutes(bufferMinutes), ct);
+            return Ok(slots);
+        }
+        catch (KeyNotFoundException)
+        {
+            return NotFound("Business not found.");
+        }
+        catch (ArgumentException ex)
+        {
+            return BadRequest(ex.Message);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return StatusCode(503, ex.Message);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Unexpected error fetching availability for Business: {BusinessId}", id);
+            return StatusCode(500, "An unexpected error occurred.");
+        }
     }
 }
