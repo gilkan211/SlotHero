@@ -36,10 +36,10 @@ public class AppDbContext : DbContext
 
     protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
     {
-        // Local SQLite fallback so EF migrations can run without an injected provider
         if (!optionsBuilder.IsConfigured)
         {
-            optionsBuilder.UseSqlite("Data Source=slotHero.db");
+            optionsBuilder.UseNpgsql("Host=localhost;Database=slothero_db;Username=postgres;Password=YOUR_PASSWORD")
+                          .UseSnakeCaseNamingConvention();
         }
     }
 
